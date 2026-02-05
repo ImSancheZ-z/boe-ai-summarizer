@@ -7,49 +7,70 @@ def enviar_telegram(mensaje):
     token = os.getenv('TELEGRAM_TOKEN')
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    # Telegram tiene un límite de 4096 caracteres
+    if len(mensaje) > 4000:
+        mensaje = mensaje[:4000] + "..."
     payload = {"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
 def pedir_resumen_gpt(texto_boe):
     api_key = os.getenv('OPENAI_API_KEY')
     url = "https://api.openai.com/v1/chat/completions"
-    headers = {"Authorization": f"Bearer {api_key}"}
-    prompt = "Eres un analista experto. Resume las 10 noticias más importantes de este sumario del BOE para ciudadanos comunes. Usa emojis y puntos clave."
+    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
+    
+    prompt = (
+        "Eres un analista experto. Resume las 10 noticias o leyes más importantes de este sumario del BOE "
+        "para ciudadanos comunes. Usa emojis, puntos clave y un lenguaje claro."
+    )
+    
     data = {
         "model": "gpt-4o-mini",
-        "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": texto_boe}]
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": texto_boe}
+        ],
+        "temperature": 0.5
     }
+    
     response = requests.post(url, headers=headers, json=data)
-    return response.json()['choices'][0]['message']['content']
+    try:
+        return response.json()['choices'][0]['message']['content']
+    except:
+        return "⚠️ La IA recibió los datos pero no pudo generar el resumen."
 
 def ejecutar():
     fecha_hoy = datetime.now().strftime('%Y%m%d')
-    # Cambiamos a la URL de sumario XML directo, que es la que mejor funciona con BeautifulSoup
-    url_xml = f"https://www.boe.es/diario_boe/xml.php?id=BOE-S-{fecha_hoy}"
+    # Usamos exactamente la URL que me has pasado
+    url_api = f"https://www.boe.es/datosabiertos/api/boe/sumario/{fecha_hoy}"
     
-    print(f"Consultando XML: {url_xml}")
-    response = requests.get(url_xml, timeout=30)
+    print(f"Consultando API: {url_api}")
+    response = requests.get(url_api, timeout=30)
     
     if response.status_code != 200:
-        enviar_telegram(f"⏳ El BOE XML aún no está disponible ({datetime.now().strftime('%d/%m')}).")
+        enviar_telegram(f"⏳ El BOE aún no responde en la API ({datetime.now().strftime('%d/%m')}).")
         return
 
-    # Usamos el parser de XML
+    # Usamos 'xml' para que BeautifulSoup entienda las etiquetas del BOE
     soup = BeautifulSoup(response.content, 'xml')
     
-    # En el XML de sumario, los títulos están en etiquetas <titulo>
-    # Buscamos todos los títulos de las disposiciones
-    titulos = [t.text for t in soup.find_all('titulo')]
-    
-    print(f"Títulos extraídos: {len(titulos)}")
+    # IMPORTANTE: Buscamos todos los textos dentro de las etiquetas <titulo>
+    # En la API que pasaste, están dentro de <item>
+    titulos = []
+    for item in soup.find_all('item'):
+        t = item.find('titulo')
+        if t and t.text:
+            titulos.append(t.text.strip())
 
-    if len(titulos) > 10: # Si hay suficientes títulos
-        # Cogemos una muestra representativa (los primeros 150 títulos suelen ser los importantes)
-        texto_para_ia = "\n- ".join(titulos[:150])
-        resumen = pedir_resumen_gpt(texto_para_ia)
-        enviar_telegram(f"🗞 *TOP 10 BOE - {datetime.now().strftime('%d/%m')}*\n\n{resumen}")
+    print(f"Títulos encontrados: {len(titulos)}")
+
+    if len(titulos) > 0:
+        # Enviamos los títulos a la IA (limitamos a los 100 primeros para no saturar)
+        texto_ia = "\n- ".join(titulos[:100])
+        resumen = pedir_resumen_gpt(texto_ia)
+        enviar_telegram(f"🗞 *RESUMEN INTELIGENTE BOE*\n\n{resumen}")
     else:
-        enviar_telegram("ℹ️ El BOE de hoy parece estar vacío o no contiene disposiciones relevantes.")
+        # Si llegamos aquí, es que la estructura del XML ha vuelto a cambiar
+        enviar_telegram("❌ Error: He leído el XML pero no he podido extraer los títulos. Revisa el código.")
 
 if __name__ == "__main__":
     ejecutar()
