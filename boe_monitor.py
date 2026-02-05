@@ -42,68 +42,48 @@ def pedir_resumen_gpt(texto_boe):
         return response.json()['choices'][0]['message']['content']
     except Exception as e:
         print(f"Error en GPT: {e}")
-        return f"⚠️ La IA no pudo procesar el texto. Error: {str(e)[:100]}"
+        return f"⚠️ La IA no pudo procesar el texto."
 
 def ejecutar():
     fecha_hoy = datetime.now().strftime('%Y%m%d')
     url_api = f"https://www.boe.es/datosabiertos/api/boe/sumario/{fecha_hoy}"
     
     print(f"Consultando API: {url_api}")
-    print(f"Fecha detectada: {fecha_hoy}")
     
-    # Headers que imitan un navegador real
+    # Headers para que el BOE acepte la petición
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Accept': 'application/xml, text/xml, */*',
-        'Accept-Language': 'es-ES,es;q=0.9',
-        'Accept-Encoding': 'gzip, deflate',
-        'Connection': 'keep-alive'
+        'Accept-Language': 'es-ES,es;q=0.9'
     }
     
     try:
         response = requests.get(url_api, headers=headers, timeout=30)
         
-        print(f"Status code: {response.status_code}")
-        print(f"Headers respuesta: {dict(response.headers)}")
-        print(f"URL final: {response.url}")
-        print(f"Tamaño contenido: {len(response.content)} bytes")
-        print(f"Primeros 1000 chars: {response.text[:1000]}")
-        
         if response.status_code != 200:
-            mensaje_error = f"❌ Error {response.status_code}\nURL: {url_api}\nRespuesta: {response.text[:500]}"
-            print(mensaje_error)
-            enviar_telegram(mensaje_error)
-            return
-        
-        # Verificar que hay contenido
-        if len(response.content) < 100:
-            enviar_telegram(f"⚠️ Respuesta muy corta: {len(response.content)} bytes")
+            print(f"Error {response.status_code}")
+            enviar_telegram(f"⏳ BOE no disponible aún ({datetime.now().strftime('%d/%m')})")
             return
             
     except requests.exceptions.RequestException as e:
         print(f"Error de red: {e}")
-        enviar_telegram(f"❌ Error de red: {str(e)[:200]}")
+        enviar_telegram(f"❌ Error de conexión al BOE")
         return
     
     try:
         soup = BeautifulSoup(response.content, 'xml')
         
-        # Verificar estructura
-        sumario = soup.find('sumario')
-        if not sumario:
-            print("⚠️ No se encontró tag <sumario>")
-            print(f"Tags encontrados: {[tag.name for tag in soup.find_all()][:20]}")
-            enviar_telegram(f"⚠️ XML sin tag sumario. Tags: {[tag.name for tag in soup.find_all()][:10]}")
+        if not soup.find('sumario'):
+            enviar_telegram(f"⚠️ Error en estructura del XML")
             return
         
         resumen_para_ia = []
         
-        # Navegamos por las secciones
+        # Extraer títulos navegando la estructura XML
         secciones = soup.find_all('seccion')
-        print(f"✅ Secciones encontradas: {len(secciones)}")
+        print(f"Secciones encontradas: {len(secciones)}")
         
         for seccion in secciones:
-            nombre_seccion = seccion.get('nombre', 'Sin sección')
             departamentos = seccion.find_all('departamento')
             
             for depto in departamentos:
@@ -118,30 +98,21 @@ def ejecutar():
                         if titulo and titulo.text:
                             resumen_para_ia.append(f"[{nombre_depto}] {titulo.text.strip()}")
         
-        print(f"✅ Títulos extraídos: {len(resumen_para_ia)}")
-        
-        # Mostrar algunos ejemplos
-        if len(resumen_para_ia) > 0:
-            print("Ejemplos de títulos:")
-            for i, titulo in enumerate(resumen_para_ia[:3]):
-                print(f"  {i+1}. {titulo[:100]}...")
+        print(f"Títulos extraídos: {len(resumen_para_ia)}")
         
         if len(resumen_para_ia) > 0:
+            # Enviar a GPT (máximo 120 títulos)
             texto_ia = "\n".join(resumen_para_ia[:120])
-            print(f"Enviando {len(texto_ia)} chars a GPT...")
-            
             resumen_final = pedir_resumen_gpt(texto_ia)
             
-            enviar_telegram(f"🤖 *TOP 10 BOE - {datetime.now().strftime('%d/%m')}*\n\n{resumen_final}")
-            print("✅ Mensaje enviado correctamente")
+            enviar_telegram(f"🤖 *TOP 10 BOE - {datetime.now().strftime('%d/%m/%Y')}*\n\n{resumen_final}")
+            print("✅ Resumen enviado correctamente")
         else:
-            enviar_telegram(f"❌ No se extrajeron títulos del XML")
+            enviar_telegram(f"⚠️ No se encontraron noticias en el BOE de hoy")
             
     except Exception as e:
-        print(f"❌ Error procesando XML: {e}")
-        import traceback
-        traceback.print_exc()
-        enviar_telegram(f"❌ Error: {str(e)[:300]}")
+        print(f"Error procesando: {e}")
+        enviar_telegram(f"❌ Error al procesar el BOE")
 
 if __name__ == "__main__":
     ejecutar()
