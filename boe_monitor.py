@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 def enviar_telegram(mensaje):
     token = os.getenv('TELEGRAM_TOKEN')
@@ -44,99 +44,104 @@ def pedir_resumen_gpt(texto_boe):
         print(f"Error en GPT: {e}")
         return f"⚠️ La IA no pudo procesar el texto. Error: {str(e)[:100]}"
 
-def obtener_boe(fecha):
-    """Intenta obtener el BOE de una fecha específica"""
-    fecha_str = fecha.strftime('%Y%m%d')
-    url_api = f"https://www.boe.es/datosabiertos/api/boe/sumario/{fecha_str}"
+def ejecutar():
+    fecha_hoy = datetime.now().strftime('%Y%m%d')
+    url_api = f"https://www.boe.es/datosabiertos/api/boe/sumario/{fecha_hoy}"
     
     print(f"Consultando API: {url_api}")
+    print(f"Fecha detectada: {fecha_hoy}")
+    
+    # Headers que imitan un navegador real
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Accept': 'application/xml, text/xml, */*',
+        'Accept-Language': 'es-ES,es;q=0.9',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive'
+    }
     
     try:
-        response = requests.get(url_api, timeout=30)
-        print(f"Status code: {response.status_code}")
+        response = requests.get(url_api, headers=headers, timeout=30)
         
-        if response.status_code == 200:
-            return response, fecha
-        else:
-            return None, None
+        print(f"Status code: {response.status_code}")
+        print(f"Headers respuesta: {dict(response.headers)}")
+        print(f"URL final: {response.url}")
+        print(f"Tamaño contenido: {len(response.content)} bytes")
+        print(f"Primeros 1000 chars: {response.text[:1000]}")
+        
+        if response.status_code != 200:
+            mensaje_error = f"❌ Error {response.status_code}\nURL: {url_api}\nRespuesta: {response.text[:500]}"
+            print(mensaje_error)
+            enviar_telegram(mensaje_error)
+            return
+        
+        # Verificar que hay contenido
+        if len(response.content) < 100:
+            enviar_telegram(f"⚠️ Respuesta muy corta: {len(response.content)} bytes")
+            return
             
-    except Exception as e:
-        print(f"Error en petición: {e}")
-        return None, None
-
-def ejecutar():
-    # Intentar primero con hoy
-    hoy = datetime.now()
-    response, fecha_usada = obtener_boe(hoy)
-    
-    # Si falla, intentar con ayer
-    if response is None:
-        print("BOE de hoy no disponible, intentando con ayer...")
-        ayer = hoy - timedelta(days=1)
-        response, fecha_usada = obtener_boe(ayer)
-    
-    # Si ninguno funciona, avisar y salir
-    if response is None:
-        enviar_telegram(f"⏳ BOE aún no publicado ({hoy.strftime('%d/%m')}). Reintentando más tarde...")
+    except requests.exceptions.RequestException as e:
+        print(f"Error de red: {e}")
+        enviar_telegram(f"❌ Error de red: {str(e)[:200]}")
         return
-    
-    print(f"✅ BOE obtenido correctamente para {fecha_usada.strftime('%d/%m/%Y')}")
     
     try:
         soup = BeautifulSoup(response.content, 'xml')
         
-        # Verificar que el XML se parseó correctamente
-        if not soup.find('sumario'):
-            print("⚠️ No se encontró el tag <sumario> en el XML")
-            enviar_telegram(f"⚠️ Estructura XML inesperada ({fecha_usada.strftime('%d/%m')})")
+        # Verificar estructura
+        sumario = soup.find('sumario')
+        if not sumario:
+            print("⚠️ No se encontró tag <sumario>")
+            print(f"Tags encontrados: {[tag.name for tag in soup.find_all()][:20]}")
+            enviar_telegram(f"⚠️ XML sin tag sumario. Tags: {[tag.name for tag in soup.find_all()][:10]}")
             return
         
         resumen_para_ia = []
         
         # Navegamos por las secciones
         secciones = soup.find_all('seccion')
-        print(f"Secciones encontradas: {len(secciones)}")
+        print(f"✅ Secciones encontradas: {len(secciones)}")
         
         for seccion in secciones:
             nombre_seccion = seccion.get('nombre', 'Sin sección')
-            
-            # Dentro de cada sección, buscamos departamentos
             departamentos = seccion.find_all('departamento')
             
             for depto in departamentos:
                 nombre_depto = depto.get('nombre', 'Sin departamento')
-                
-                # Dentro de cada departamento, buscamos epígrafes
                 epigrafes = depto.find_all('epigrafe')
                 
                 for epigrafe in epigrafes:
-                    # Dentro de cada epígrafe, buscamos items
                     items = epigrafe.find_all('item')
                     
                     for item in items:
                         titulo = item.find('titulo')
                         if titulo and titulo.text:
-                            # Formato: [Departamento] Título
                             resumen_para_ia.append(f"[{nombre_depto}] {titulo.text.strip()}")
         
-        print(f"Títulos extraídos: {len(resumen_para_ia)}")
+        print(f"✅ Títulos extraídos: {len(resumen_para_ia)}")
+        
+        # Mostrar algunos ejemplos
+        if len(resumen_para_ia) > 0:
+            print("Ejemplos de títulos:")
+            for i, titulo in enumerate(resumen_para_ia[:3]):
+                print(f"  {i+1}. {titulo[:100]}...")
         
         if len(resumen_para_ia) > 0:
-            # Enviamos los datos a GPT (primeros 120 títulos)
             texto_ia = "\n".join(resumen_para_ia[:120])
+            print(f"Enviando {len(texto_ia)} chars a GPT...")
+            
             resumen_final = pedir_resumen_gpt(texto_ia)
             
-            # Indicar si es de hoy o de ayer
-            emoji_fecha = "📅" if fecha_usada.date() == hoy.date() else "📆"
-            enviar_telegram(f"🤖 *TOP 10 BOE - {fecha_usada.strftime('%d/%m')}* {emoji_fecha}\n\n{resumen_final}")
+            enviar_telegram(f"🤖 *TOP 10 BOE - {datetime.now().strftime('%d/%m')}*\n\n{resumen_final}")
+            print("✅ Mensaje enviado correctamente")
         else:
-            enviar_telegram(f"❌ No se extrajeron títulos del XML ({fecha_usada.strftime('%d/%m')})")
+            enviar_telegram(f"❌ No se extrajeron títulos del XML")
             
     except Exception as e:
-        print(f"Error procesando XML: {e}")
+        print(f"❌ Error procesando XML: {e}")
         import traceback
         traceback.print_exc()
-        enviar_telegram(f"❌ Error procesando datos: {str(e)[:100]}")
+        enviar_telegram(f"❌ Error: {str(e)[:300]}")
 
 if __name__ == "__main__":
     ejecutar()
