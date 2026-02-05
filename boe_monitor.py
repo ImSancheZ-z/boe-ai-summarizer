@@ -7,6 +7,9 @@ def enviar_telegram(mensaje):
     token = os.getenv('TELEGRAM_TOKEN')
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    # Fragmentamos si el mensaje es muy largo para Telegram
+    if len(mensaje) > 4000:
+        mensaje = mensaje[:4000] + "..."
     payload = {"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
@@ -19,11 +22,10 @@ def pedir_resumen_gpt(texto_boe):
         "Authorization": f"Bearer {api_key}"
     }
     
-    # El prompt es la clave: le pedimos que sea útil para el ciudadano
     prompt = (
-        "Eres un analista experto en el BOE. De la siguiente lista de títulos, "
-        "selecciona y resume los 5 más importantes para el ciudadano medio (ayudas, impuestos, motor, vivienda). "
-        "Usa un tono informativo pero directo. Estructura con puntos y emojis."
+        "Eres un analista experto en el BOE. Te proporciono el sumario oficial de hoy. "
+        "Selecciona las 10 noticias, leyes o ayudas más relevantes para la ciudadanía y el sector motor/motos. "
+        "Explica por qué son importantes en una frase corta. Usa emojis y un formato limpio."
     )
     
     data = {
@@ -32,37 +34,48 @@ def pedir_resumen_gpt(texto_boe):
             {"role": "system", "content": prompt},
             {"role": "user", "content": texto_boe}
         ],
-        "temperature": 0.7
+        "temperature": 0.3 # Mayor precisión
     }
     
     try:
         response = requests.post(url, headers=headers, json=data)
         return response.json()['choices'][0]['message']['content']
     except Exception as e:
-        return f"⚠️ Error con GPT: {str(e)}"
+        return f"⚠️ Error con la IA: {str(e)}"
 
 def ejecutar():
+    # Usamos la API de Datos Abiertos que has indicado
     fecha_hoy = datetime.now().strftime('%Y%m%d')
-    url_xml = f"https://www.boe.es/diario_boe/xml.php?id=BOE-S-{fecha_hoy}"
+    url_api = f"https://www.boe.es/datosabiertos/api/boe/sumario/{fecha_hoy}"
     
-    response = requests.get(url_xml)
+    print(f"Consultando API: {url_api}")
+    response = requests.get(url_api, timeout=30)
+    
     if response.status_code != 200:
-        print("BOE no disponible.")
+        print("El BOE de hoy no está disponible en la API.")
         return
 
+    # Procesamos el XML de la API
     soup = BeautifulSoup(response.content, 'xml')
-    # Extraemos todos los títulos del sumario
-    titulos = [item.find('titulo').text for item in soup.find_all('item') if item.find('titulo')]
     
-    # Filtro de seguridad para no enviar 500 páginas a la IA
-    palabras_clave = ["ayuda", "subvención", "impuesto", "tráfico", "vehículo", "carretera", "vivienda", "empleo", "pensiones", "motos"]
-    interesantes = [t for t in titulos if any(k in t.lower() for k in palabras_clave)]
+    # En esta API, los títulos suelen estar dentro de etiquetas <titulo> dentro de <item>
+    items = soup.find_all('item')
+    titulos_sumario = []
+    
+    for item in items:
+        t = item.find('titulo')
+        if t:
+            titulos_sumario.append(t.text)
 
-    if interesantes:
-        resumen = pedir_resumen_gpt("\n".join(interesantes))
-        enviar_telegram(f"🗞 *RESUMEN INTELIGENTE BOE ({datetime.now().strftime('%d/%m')})*\n\n{resumen}")
+    if titulos_sumario:
+        texto_para_ia = "\n- ".join(titulos_sumario)
+        # Enviamos todo el índice a GPT-4o mini
+        resumen_ia = pedir_resumen_gpt(texto_para_ia)
+        
+        mensaje_final = f"🗞 *BOE INTELIGENTE ({datetime.now().strftime('%d/%m')})*\n\n{resumen_ia}"
+        enviar_telegram(mensaje_final)
     else:
-        print("Hoy no hay temas de interés según las palabras clave.")
+        print("No se encontraron títulos en el XML de la API.")
 
 if __name__ == "__main__":
     ejecutar()
