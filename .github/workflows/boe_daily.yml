@@ -1,28 +1,32 @@
-name: Monitor Diario BOE
+name: Monitor Diario BOE con IA
+
 on:
   schedule:
-    # Se ejecuta a las 07:30 UTC (08:30 hora española)
-    - cron: '30 7 * * *'
-  workflow_dispatch: # Botón para prueba manual
+    # Se ejecuta a las 07:45 UTC (08:45 AM en España), 
+    # hora ideal para que el BOE ya esté cargado.
+    - cron: '45 7 * * *'
+  workflow_dispatch: # Permite ejecutarlo manualmente con un botón
 
 jobs:
-  build:
+  run-boe-ai:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout del codigo
+      - name: Descargar codigo del repositorio
         uses: actions/checkout@v4
-      
-      - name: Configurar Python
+
+      - name: Configurar entorno Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      
-      - name: Instalar dependencias
-        run: |
-          pip install requests beautifulsoup4 lxml
-      
-      - name: Ejecutar Script del BOE
+
+      - name: Instalar librerias necesarias
+        # lxml es vital para procesar el XML del BOE rápidamente
+        run: pip install requests beautifulsoup4 lxml
+
+      - name: Ejecutar analisis del BOE
         env:
+          # Conectamos los Secrets que guardaste en Settings
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
         run: python boe_monitor.py
