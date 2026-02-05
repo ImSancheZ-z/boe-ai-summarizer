@@ -3,51 +3,66 @@ from bs4 import BeautifulSoup
 import os
 from datetime import datetime
 
-# Función para Telegram
 def enviar_telegram(mensaje):
     token = os.getenv('TELEGRAM_TOKEN')
     chat_id = os.getenv('TELEGRAM_CHAT_ID')
     url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": mensaje,
-        "parse_mode": "Markdown"
-    }
+    payload = {"chat_id": chat_id, "text": mensaje, "parse_mode": "Markdown"}
     requests.post(url, json=payload)
 
-def obtener_sumario_xml():
-    fecha_hoy = datetime.now().strftime('%Y%m%d')
-    url = f"https://www.boe.es/diario_boe/xml.php?id=BOE-S-{fecha_hoy}"
+def pedir_resumen_gpt(texto_boe):
+    api_key = os.getenv('OPENAI_API_KEY')
+    url = "https://api.openai.com/v1/chat/completions"
+    
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}"
+    }
+    
+    # El prompt es la clave: le pedimos que sea útil para el ciudadano
+    prompt = (
+        "Eres un analista experto en el BOE. De la siguiente lista de títulos, "
+        "selecciona y resume los 5 más importantes para el ciudadano medio (ayudas, impuestos, motor, vivienda). "
+        "Usa un tono informativo pero directo. Estructura con puntos y emojis."
+    )
+    
+    data = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": texto_boe}
+        ],
+        "temperature": 0.7
+    }
     
     try:
-        response = requests.get(url, timeout=20)
-        if response.status_code != 200: return None
-        return BeautifulSoup(response.content, 'xml')
-    except:
-        return None
+        response = requests.post(url, headers=headers, json=data)
+        return response.json()['choices'][0]['message']['content']
+    except Exception as e:
+        return f"⚠️ Error con GPT: {str(e)}"
 
 def ejecutar():
-    soup = obtener_sumario_xml()
-    if not soup:
-        print("BOE no disponible todavía.")
+    fecha_hoy = datetime.now().strftime('%Y%m%d')
+    url_xml = f"https://www.boe.es/diario_boe/xml.php?id=BOE-S-{fecha_hoy}"
+    
+    response = requests.get(url_xml)
+    if response.status_code != 200:
+        print("BOE no disponible.")
         return
 
-    # Extraemos todos los títulos del día para la IA
-    items = soup.find_all('item')
-    todos_los_titulos = [item.find('titulo').text for item in items if item.find('titulo')]
+    soup = BeautifulSoup(response.content, 'xml')
+    # Extraemos todos los títulos del sumario
+    titulos = [item.find('titulo').text for item in soup.find_all('item') if item.find('titulo')]
     
-    # --- FASE 1: Filtro previo (para no gastar tokens de IA innecesarios) ---
-    keywords = ["ayuda", "subvención", "impuesto", "carretera", "vivienda", "empleo", "pensiones", "motos", "tráfico"]
-    interesantes = [t for t in todos_los_titulos if any(k in t.lower() for k in keywords)]
+    # Filtro de seguridad para no enviar 500 páginas a la IA
+    palabras_clave = ["ayuda", "subvención", "impuesto", "tráfico", "vehículo", "carretera", "vivienda", "empleo", "pensiones", "motos"]
+    interesantes = [t for t in titulos if any(k in t.lower() for k in palabras_clave)]
 
     if interesantes:
-        # Aquí es donde en el siguiente paso conectaremos con la API de IA
-        texto_para_ia = "\n".join(interesantes)
-        
-        # Por ahora, te enviamos el "bruto" filtrado
-        mensaje = f"🗞 **BOE {datetime.now().strftime('%d/%m/%Y')}**\n\n"
-        mensaje += "\n\n".join(interesantes[:10])
-        enviar_telegram(mensaje)
+        resumen = pedir_resumen_gpt("\n".join(interesantes))
+        enviar_telegram(f"🗞 *RESUMEN INTELIGENTE BOE ({datetime.now().strftime('%d/%m')})*\n\n{resumen}")
+    else:
+        print("Hoy no hay temas de interés según las palabras clave.")
 
 if __name__ == "__main__":
     ejecutar()
