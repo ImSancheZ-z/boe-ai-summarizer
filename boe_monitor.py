@@ -1,7 +1,7 @@
 import requests
 from bs4 import BeautifulSoup
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 def enviar_telegram(mensaje):
     token = os.getenv('TELEGRAM_TOKEN')
@@ -44,36 +44,43 @@ def pedir_resumen_gpt(texto_boe):
         print(f"Error en GPT: {e}")
         return f"⚠️ La IA no pudo procesar el texto. Error: {str(e)[:100]}"
 
-def ejecutar():
-    fecha_hoy = datetime.now().strftime('%Y%m%d')
-    url_api = f"https://www.boe.es/datosabiertos/api/boe/sumario/{fecha_hoy}"
+def obtener_boe(fecha):
+    """Intenta obtener el BOE de una fecha específica"""
+    fecha_str = fecha.strftime('%Y%m%d')
+    url_api = f"https://www.boe.es/datosabiertos/api/boe/sumario/{fecha_str}"
     
     print(f"Consultando API: {url_api}")
     
     try:
         response = requests.get(url_api, timeout=30)
         print(f"Status code: {response.status_code}")
-        print(f"Content-Type: {response.headers.get('Content-Type', 'No especificado')}")
-        print(f"Tamaño respuesta: {len(response.content)} bytes")
         
-        # Imprimir primeros 500 caracteres para debug
-        print(f"Primeros caracteres: {response.text[:500]}")
-        
-        if response.status_code != 200:
-            enviar_telegram(f"⏳ API devolvió código {response.status_code} ({datetime.now().strftime('%d/%m')})")
-            return
-        
-        # Verificar que hay contenido
-        if len(response.content) < 100:
-            enviar_telegram(f"⚠️ API devolvió respuesta vacía o muy corta ({datetime.now().strftime('%d/%m')})")
-            return
+        if response.status_code == 200:
+            return response, fecha
+        else:
+            return None, None
             
-    except requests.exceptions.Timeout:
-        enviar_telegram(f"⏱️ Timeout al consultar API ({datetime.now().strftime('%d/%m')})")
+    except Exception as e:
+        print(f"Error en petición: {e}")
+        return None, None
+
+def ejecutar():
+    # Intentar primero con hoy
+    hoy = datetime.now()
+    response, fecha_usada = obtener_boe(hoy)
+    
+    # Si falla, intentar con ayer
+    if response is None:
+        print("BOE de hoy no disponible, intentando con ayer...")
+        ayer = hoy - timedelta(days=1)
+        response, fecha_usada = obtener_boe(ayer)
+    
+    # Si ninguno funciona, avisar y salir
+    if response is None:
+        enviar_telegram(f"⏳ BOE aún no publicado ({hoy.strftime('%d/%m')}). Reintentando más tarde...")
         return
-    except requests.exceptions.RequestException as e:
-        enviar_telegram(f"❌ Error de red: {str(e)[:100]} ({datetime.now().strftime('%d/%m')})")
-        return
+    
+    print(f"✅ BOE obtenido correctamente para {fecha_usada.strftime('%d/%m/%Y')}")
     
     try:
         soup = BeautifulSoup(response.content, 'xml')
@@ -81,7 +88,7 @@ def ejecutar():
         # Verificar que el XML se parseó correctamente
         if not soup.find('sumario'):
             print("⚠️ No se encontró el tag <sumario> en el XML")
-            enviar_telegram(f"⚠️ Estructura XML inesperada ({datetime.now().strftime('%d/%m')})")
+            enviar_telegram(f"⚠️ Estructura XML inesperada ({fecha_usada.strftime('%d/%m')})")
             return
         
         resumen_para_ia = []
@@ -119,9 +126,11 @@ def ejecutar():
             texto_ia = "\n".join(resumen_para_ia[:120])
             resumen_final = pedir_resumen_gpt(texto_ia)
             
-            enviar_telegram(f"🤖 *TOP 10 BOE - {datetime.now().strftime('%d/%m')}*\n\n{resumen_final}")
+            # Indicar si es de hoy o de ayer
+            emoji_fecha = "📅" if fecha_usada.date() == hoy.date() else "📆"
+            enviar_telegram(f"🤖 *TOP 10 BOE - {fecha_usada.strftime('%d/%m')}* {emoji_fecha}\n\n{resumen_final}")
         else:
-            enviar_telegram(f"❌ No se extrajeron títulos del XML ({datetime.now().strftime('%d/%m')}). Ver logs.")
+            enviar_telegram(f"❌ No se extrajeron títulos del XML ({fecha_usada.strftime('%d/%m')})")
             
     except Exception as e:
         print(f"Error procesando XML: {e}")
